@@ -1,0 +1,17 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# TripoSR model cache
+.cache/
+checkpoints/
+
+# Temp files
+*.glb
+*.obj
+*.stl
+tmp/

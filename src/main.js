@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { STLExporter } from 'three/addons/exporters/STLExporter.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
 // ─── State ─────────────────────────────────────────────────────
 let currentColor = '#4fc3f7';
@@ -546,6 +547,71 @@ async function callIterateApiStream(prompt, currentState, screenshots, reference
   return result;
 }
 
+// ───  TripoSR Integration ──────────────────────────────────────
+const TRIPOSR_BACKEND = 'http://localhost:5000';
+const gltfLoader = new GLTFLoader();
+
+async function generateWithTripoSR(referenceImage, resolution = 256) {
+  console.log('[TripoSR] Generating 3D mesh from reference image...');
+
+  const response = await fetch(`${TRIPOSR_BACKEND}/generate`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      image: referenceImage,
+      resolution: resolution
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error(`TripoSR generation failed: ${error.error || response.statusText}`);
+  }
+
+  // Get GLB file as blob
+  const glbBlob = await response.blob();
+  console.log(`[TripoSR] Received GLB file: ${(glbBlob.size / 1024).toFixed(1)}KB`);
+
+  // Convert blob to object URL
+  const objectURL = URL.createObjectURL(glbBlob);
+
+  // Load GLB with Three.js
+  return new Promise((resolve, reject) => {
+    gltfLoader.load(
+      objectURL,
+      (gltf) => {
+        URL.revokeObjectURL(objectURL);
+        console.log('[TripoSR] GLB loaded successfully');
+
+        // Extract mesh group from GLTF scene
+        const group = new THREE.Group();
+        gltf.scene.traverse((child) => {
+          if (child.isMesh) {
+            // Enable shadows
+            child.castShadow = true;
+            child.receiveShadow = true;
+
+            // Ensure material is compatible
+            if (!child.material) {
+              child.material = new THREE.MeshStandardMaterial();
+            }
+          }
+        });
+
+        group.add(gltf.scene);
+        resolve({ name: 'triposr_model', group });
+      },
+      undefined,
+      (error) => {
+        URL.revokeObjectURL(objectURL);
+        reject(new Error(`Failed to load GLB: ${error.message}`));
+      }
+    );
+  });
+}
+
 // Stream SSE from /api/generate, returns parsed result object
 async function callApiStream(prompt, currentState, referenceImage = null) {
   console.log('[Frontend] Calling /api/generate', {
@@ -624,8 +690,10 @@ async function callApiStream(prompt, currentState, referenceImage = null) {
 
 async function handleAiGenerate() {
   const prompt = aiPrompt.value.trim();
-  if (!prompt && !referenceImageData) {
-    setAiStatus('Please enter a prompt or upload a reference image', 'error');
+
+  // TripoSR requires a reference image
+  if (!referenceImageData) {
+    setAiStatus('Please upload a reference image to generate a 3D model', 'error');
     return;
   }
 
@@ -633,55 +701,48 @@ async function handleAiGenerate() {
   setAiStatus('');
   showThinkingPanel();
 
-  // Show reference image in the screenshot area if present
-  if (referenceImageData) {
-    displayReferenceImage(referenceImageData);
-    appendThinking('📸 Analyzing reference image...\n\n');
-  }
-
-  const MAX_RETRIES = 2;
+  // Show reference image in the screenshot area
+  displayReferenceImage(referenceImageData);
+  appendThinking('📸 Analyzing reference image with TripoSR...\n\n');
 
   try {
-    const currentState = currentCode
-      ? { mode: 'code', code: currentCode, buildSize }
-      : { mode: 'empty', buildSize };
+    // Use TripoSR to generate high-fidelity mesh
+    setAiStatus('Generating 3D mesh with TripoSR...', '');
+    appendThinking('🔄 Sending to TripoSR backend...\n');
 
-    let data = await callApiStream(prompt, currentState, referenceImageData);
-    let lastError = null;
+    const result = await generateWithTripoSR(referenceImageData, 256);
 
-    // Try executing, auto-retry on runtime errors
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-      if (!data.code) throw new Error('AI did not return code');
+    appendThinking('✅ Mesh generation complete!\n');
+    appendThinking(`📦 Loading model into scene...\n\n`);
 
-      try {
-        buildFromCode(data.code);
-        lastError = null;
-        break;
-      } catch (err) {
-        lastError = err;
-        console.warn(`[Attempt ${attempt + 1}] Code error:`, err.message);
-
-        if (attempt < MAX_RETRIES) {
-          setAiStatus(`Runtime error, retrying (${attempt + 1}/${MAX_RETRIES})…`, 'error');
-          appendThinking(`\n\n⚠ Runtime error: ${err.message}\nRetrying…\n\n`);
-          setThinkingStatus('Retrying…');
-          thinkingDot.classList.remove('done');
-          const fixPrompt = `The code you generated threw this error:\n${err.message}\n\nPlease fix the code. Here is the broken code:\n${data.code}`;
-          data = await callApiStream(fixPrompt, { mode: 'empty', buildSize }, referenceImageData);
-        }
-      }
-    }
-
-    if (lastError) throw lastError;
-
-    const name = data.name || 'object';
-    let meshCount = 0;
+    // Load the mesh into the scene
     if (sceneObject) {
-      sceneObject.traverse((c) => {
-        if (c.isMesh) meshCount++;
+      scene.remove(sceneObject);
+      sceneObject.traverse((child) => {
+        if (child.geometry) child.geometry.dispose();
+        if (child.material) {
+          if (Array.isArray(child.material)) {
+            child.material.forEach((m) => m.dispose());
+          } else {
+            child.material.dispose();
+          }
+        }
       });
     }
-    setAiStatus(`→ ${name} (${meshCount} meshes)`, 'success');
+
+    sceneObject = result.group;
+    scene.add(sceneObject);
+
+    // Count meshes
+    let meshCount = 0;
+    sceneObject.traverse((c) => {
+      if (c.isMesh) meshCount++;
+    });
+
+    // Store reference for STL export
+    currentCode = `// Generated by TripoSR from reference image\n// Meshes: ${meshCount}`;
+
+    setAiStatus(`→ ${result.name} (${meshCount} meshes) - High Fidelity`, 'success');
     setThinkingStatus('Done', true);
 
     // Hide reference image preview but keep data for iterations
