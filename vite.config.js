@@ -1,7 +1,7 @@
 import { defineConfig, loadEnv } from 'vite';
 
-const CLAUDE_MODEL = 'claude-sonnet-4-20250514';
-const CLAUDE_VISION_MODEL = 'claude-opus-4-6';
+// Always use Opus 4.6 for better quality and vision support
+const CLAUDE_MODEL = 'claude-opus-4-6';
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
@@ -44,12 +44,13 @@ export default defineConfig(({ mode }) => {
                 return sendJson(400, { error: 'Invalid JSON body' });
               }
 
-              const { prompt, currentState, screenshot } = parsed;
-              if (!prompt) {
-                return sendJson(400, { error: 'Missing prompt field' });
+              const { prompt, currentState, screenshots, referenceImage } = parsed;
+              if (!prompt && !referenceImage) {
+                return sendJson(400, { error: 'Missing prompt or reference image' });
               }
 
-              const isVisionMode = isIterate && screenshot;
+              const isVisionMode = (isIterate && screenshots && screenshots.length > 0) || (isGenerate && referenceImage);
+              console.log(`[AI] Vision mode: ${isVisionMode} | Reason: ${isIterate && screenshots?.length > 0 ? 'iteration with screenshots' : isGenerate && referenceImage ? 'generate with reference image' : 'none'}`);
 
               const apiKey = env.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY;
               if (!apiKey) {
@@ -58,13 +59,26 @@ export default defineConfig(({ mode }) => {
                 });
               }
 
-              console.log(`[AI] Prompt: "${prompt}" | Mode: ${currentState?.mode} | Vision: ${isVisionMode}`);
+              console.log(`[AI] ${isIterate ? 'ITERATE' : 'GENERATE'} | Prompt: "${prompt?.slice(0, 50)}..." | Screenshots: ${screenshots?.length || 0} | RefImage: ${!!referenceImage}`);
 
-              const visionSystemPrompt = `You are an expert Three.js 3D modeler with vision capabilities. You can see a screenshot of the current 3D object and improve it based on visual analysis.
+              const visionSystemPrompt = referenceImage
+                ? `You are an expert Three.js 3D modeler with vision capabilities. You can see a reference image and must recreate it as a 3D object.
 
-You are looking at a screenshot of a 3D object rendered in a Three.js scene. Your task is to analyze what you see and generate improved JavaScript code to make the object more detailed, visually appealing, and realistic.
+You are looking at a reference image provided by the user. Your task is to analyze what you see and create a THREE.js 3D model that mimics the object in the image as closely as possible. Consider the shape, proportions, colors, and key features visible in the reference image.
 
-IMPORTANT: When analyzing the screenshot, consider:
+You respond ONLY with a JSON object: {"name":"short_name","code":"...javascript code...","observations":"what you noticed visually"}
+No markdown. No backticks. No extra explanation. Just the JSON.
+
+The "code" field is a JavaScript function body. It will be executed as:
+  new Function('THREE', code)(THREE)
+It must return a THREE.Group containing all meshes.
+
+The "observations" field should briefly describe what you saw in the reference image and how you recreated it.`
+                : `You are an expert Three.js 3D modeler with vision capabilities. You can see multiple screenshots of the current 3D object from different angles and improve it based on visual analysis.
+
+You are looking at multiple screenshots of a 3D object rendered in a Three.js scene from different viewpoints (front, back, sides, top-down). Your task is to analyze what you see from all angles and generate improved JavaScript code to make the object more detailed, visually appealing, and realistic.
+
+IMPORTANT: When analyzing the screenshots, consider:
 - Overall shape and proportions - are they accurate?
 - Level of detail - can more geometric details be added?
 - Visual balance and composition
@@ -146,8 +160,8 @@ The output will be exported as STL for FDM 3D printing. Follow these constraints
 - **Hole Sizing:** Horizontal holes print slightly smaller — oversize them by ~0.2mm.
 
 ## Current state of the 3D scene:
-${currentState.code ? 'Current code:\\n' + currentState.code : JSON.stringify(currentState, null, 2)}
-${currentState.lastError ? 'Last error: ' + currentState.lastError : ''}
+${currentState?.code ? 'Current code:\\n' + currentState.code : JSON.stringify(currentState || { mode: 'empty' }, null, 2)}
+${currentState?.lastError ? 'Last error: ' + currentState.lastError : ''}
 
 If the user says to MODIFY the current object, adjust the existing code. If they describe something new, start fresh.${isVisionMode ? '\n\nYou are in VISION MODE. Analyze the provided screenshot carefully and make improvements based on what you see.' : ''}`;
 
@@ -161,55 +175,154 @@ If the user says to MODIFY the current object, adjust the existing code. If they
               // Build message content
               let messageContent;
               if (isVisionMode) {
-                // Extract base64 data from data URL
-                const base64Data = screenshot.split(',')[1];
-                const mediaType = screenshot.match(/data:(.*?);/)?.[1] || 'image/png';
+                messageContent = [];
 
-                messageContent = [
-                  {
+                if (referenceImage && !screenshots) {
+                  // Initial generation - reference image only
+                  const base64Data = referenceImage.split(',')[1];
+                  const mediaType = referenceImage.match(/data:(.*?);/)?.[1] || 'image/png';
+
+                  messageContent.push({
                     type: 'image',
                     source: {
                       type: 'base64',
                       media_type: mediaType,
                       data: base64Data,
                     },
-                  },
-                  {
+                  });
+
+                  const userPrompt = prompt || 'Create a 3D model that matches this reference image as closely as possible';
+                  messageContent.push({
                     type: 'text',
-                    text: prompt,
-                  },
-                ];
+                    text: `Reference image provided. ${userPrompt}\n\nAnalyze the image and create a THREE.js 3D model that recreates the object shown. Match the shape, proportions, colors, and key features as accurately as possible.`,
+                  });
+                } else if (screenshots && referenceImage) {
+                  // Iteration with reference image - show reference first, then current 3D screenshots
+                  const refBase64 = referenceImage.split(',')[1];
+                  const refMediaType = referenceImage.match(/data:(.*?);/)?.[1] || 'image/png';
+
+                  messageContent.push({
+                    type: 'image',
+                    source: {
+                      type: 'base64',
+                      media_type: refMediaType,
+                      data: refBase64,
+                    },
+                  });
+
+                  // Add current 3D model screenshots
+                  for (const { screenshot, label } of screenshots) {
+                    const base64Data = screenshot.split(',')[1];
+                    const mediaType = screenshot.match(/data:(.*?);/)?.[1] || 'image/png';
+
+                    messageContent.push({
+                      type: 'image',
+                      source: {
+                        type: 'base64',
+                        media_type: mediaType,
+                        data: base64Data,
+                      },
+                    });
+                  }
+
+                  const imageLabels = screenshots.map(s => s.label).join(', ');
+                  messageContent.push({
+                    type: 'text',
+                    text: `The FIRST image is the reference/target that the 3D model should match. The next ${screenshots.length} images show the current 3D model from different angles: ${imageLabels}.\n\n${prompt}\n\nCompare the current 3D model to the reference image and make improvements to match it more closely. Focus on shape accuracy, proportions, and key details.`,
+                  });
+                } else if (screenshots) {
+                  // Iteration without reference image - normal improvement
+                  for (const { screenshot, label } of screenshots) {
+                    const base64Data = screenshot.split(',')[1];
+                    const mediaType = screenshot.match(/data:(.*?);/)?.[1] || 'image/png';
+
+                    messageContent.push({
+                      type: 'image',
+                      source: {
+                        type: 'base64',
+                        media_type: mediaType,
+                        data: base64Data,
+                      },
+                    });
+                  }
+
+                  const imageLabels = screenshots.map(s => s.label).join(', ');
+                  messageContent.push({
+                    type: 'text',
+                    text: `You are viewing this 3D object from ${screenshots.length} different angles: ${imageLabels}.\n\n${prompt}`,
+                  });
+                }
               } else {
                 messageContent = prompt;
               }
 
-              const apiRes = await fetch('https://api.anthropic.com/v1/messages', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'x-api-key': apiKey,
-                  'anthropic-version': '2023-06-01',
+              const requestBody = {
+                model: CLAUDE_MODEL, // Always Opus 4.6
+                max_tokens: 16384,
+                stream: true,
+                thinking: {
+                  type: 'enabled',
+                  budget_tokens: 10000,
                 },
-                body: JSON.stringify({
-                  model: isVisionMode ? CLAUDE_VISION_MODEL : CLAUDE_MODEL,
-                  max_tokens: 16384,
-                  stream: true,
-                  thinking: {
-                    type: 'enabled',
-                    budget_tokens: 10000,
+                system: systemPrompt,
+                messages: [{ role: 'user', content: messageContent }],
+              };
+
+              console.log(`[AI] Using model: ${requestBody.model} (OPUS 4.6)`);
+              console.log(`[AI] Message content type: ${Array.isArray(messageContent) ? 'array' : 'string'}`);
+              if (Array.isArray(messageContent)) {
+                console.log(`[AI] Content blocks: ${messageContent.length} (${messageContent.map(c => c.type).join(', ')})`);
+                console.log(`[AI] System prompt length: ${systemPrompt.length} chars`);
+                console.log(`[AI] Request structure:`, {
+                  model: requestBody.model,
+                  max_tokens: requestBody.max_tokens,
+                  stream: requestBody.stream,
+                  thinking: requestBody.thinking,
+                  content_blocks: messageContent.map(c => ({ type: c.type, size: c.type === 'image' ? `${c.source?.data?.length || 0} bytes` : `${c.text?.length || 0} chars` }))
+                });
+              }
+
+              // Add timeout to Anthropic API call
+              const controller = new AbortController();
+              const timeoutId = setTimeout(() => controller.abort(), 60000); // 60s timeout
+
+              let apiRes;
+              try {
+                apiRes = await fetch('https://api.anthropic.com/v1/messages', {
+                  method: 'POST',
+                  headers: {
+                    'Content-Type': 'application/json',
+                    'x-api-key': apiKey,
+                    'anthropic-version': '2023-06-01',
                   },
-                  system: systemPrompt,
-                  messages: [{ role: 'user', content: messageContent }],
-                }),
-              });
+                  body: JSON.stringify(requestBody),
+                  signal: controller.signal,
+                });
+                clearTimeout(timeoutId);
+              } catch (fetchErr) {
+                clearTimeout(timeoutId);
+                console.error('[AI] Fetch to Anthropic failed:', fetchErr.message);
+                sendSSE('error', { message: `Failed to reach Anthropic API: ${fetchErr.message}` });
+                res.end();
+                return;
+              }
 
               if (!apiRes.ok) {
                 const errText = await apiRes.text();
                 console.error(`[AI] Anthropic API ${apiRes.status}:`, errText);
-                sendSSE('error', { message: `Anthropic API error (${apiRes.status}): ${errText.slice(0, 300)}` });
+                let errorMessage = `Anthropic API error (${apiRes.status})`;
+                try {
+                  const errJson = JSON.parse(errText);
+                  errorMessage = errJson.error?.message || errorMessage;
+                } catch {}
+                sendSSE('error', { message: `${errorMessage}: ${errText.slice(0, 300)}` });
                 res.end();
                 return;
               }
+
+              console.log('[AI] API response OK, starting stream...');
+
+              let eventCount = 0;
 
               // Parse the SSE stream from Anthropic
               const decoder = new TextDecoder();
@@ -229,16 +342,29 @@ If the user says to MODIFY the current object, adjust the existing code. If they
                 sseBuffer = parts.pop(); // keep the incomplete last part
 
                 for (const part of parts) {
+                  // Log raw SSE data for first few events
+                  if (eventCount < 3) {
+                    console.log('[AI] Raw SSE part:', part.slice(0, 200));
+                  }
+
                   // Extract the data line from the SSE event
                   const dataLine = part.split('\n').find((l) => l.startsWith('data: '));
-                  if (!dataLine) continue;
+                  if (!dataLine) {
+                    if (eventCount < 3) console.log('[AI] No data line found in part');
+                    continue;
+                  }
                   const raw = dataLine.slice(6).trim();
                   if (raw === '[DONE]') continue;
 
                   let event;
                   try {
                     event = JSON.parse(raw);
-                  } catch {
+                    eventCount++;
+                    if (eventCount <= 10 || eventCount % 10 === 0) {
+                      console.log(`[AI] Event ${eventCount}:`, event.type, event);
+                    }
+                  } catch (parseErr) {
+                    console.error('[AI] Failed to parse event:', parseErr.message, 'Raw:', raw.slice(0, 100));
                     continue;
                   }
 

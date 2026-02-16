@@ -88,8 +88,18 @@
       <div id="prompt-bar">
         <div id="ai-status" class="ai-status"></div>
         <div id="iteration-status" class="iteration-status"></div>
+        <div id="reference-image-preview" class="reference-image-preview hidden">
+          <img id="reference-image-img" src="" alt="Reference" />
+          <button id="reference-image-remove" class="reference-image-remove" title="Remove reference image">&times;</button>
+        </div>
         <div class="prompt-input-row">
-          <textarea id="ai-prompt" rows="1" placeholder="Describe a 3D object... &quot;a dragon&quot;, &quot;make it bigger&quot;, &quot;red sports car&quot;"></textarea>
+          <input type="file" id="reference-image-input" accept="image/*" class="hidden" />
+          <button id="reference-image-btn" class="btn-attachment" title="Upload reference image">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+            </svg>
+          </button>
+          <textarea id="ai-prompt" rows="1" placeholder="Describe a 3D object, or upload a reference image..."></textarea>
           <button id="ai-generate" class="btn-generate">
             <span id="ai-btn-text">Generate</span>
             <span id="ai-spinner" class="spinner hidden"></span>

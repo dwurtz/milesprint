@@ -308,15 +308,88 @@ document.getElementById('reset-camera').addEventListener('click', () => {
 });
 
 // ─── Screenshot capture ────────────────────────────────────────
-async function captureScreenshot() {
-  // Ensure the scene is fully rendered
+
+// Calculate bounding box of the scene object
+function getObjectBounds() {
+  if (!sceneObject) return null;
+
+  const box = new THREE.Box3().setFromObject(sceneObject);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+
+  return { box, center, size, maxDim };
+}
+
+// Position camera to frame the object properly from a given angle
+function frameCameraToObject(azimuthDeg, elevationDeg, distanceMultiplier = 2.5) {
+  const bounds = getObjectBounds();
+  if (!bounds) return;
+
+  const { center, maxDim } = bounds;
+  const distance = maxDim * distanceMultiplier;
+
+  // Convert angles to radians
+  const azimuth = (azimuthDeg * Math.PI) / 180;
+  const elevation = (elevationDeg * Math.PI) / 180;
+
+  // Calculate camera position using spherical coordinates
+  const x = center.x + distance * Math.cos(elevation) * Math.sin(azimuth);
+  const y = center.y + distance * Math.sin(elevation);
+  const z = center.z + distance * Math.cos(elevation) * Math.cos(azimuth);
+
+  camera.position.set(x, y, z);
+  camera.lookAt(center);
+  controls.target.copy(center);
+  controls.update();
+}
+
+// Capture a single screenshot
+async function captureSingleScreenshot() {
+  controls.update();
+  renderer.render(scene, camera);
+  await new Promise(resolve => requestAnimationFrame(resolve));
+  const raw = renderer.domElement.toDataURL('image/png', 1.0);
+  // Compress to reduce API payload
+  const compressed = await compressImage(raw, 800, 0.75);
+  return compressed;
+}
+
+// Capture multiple screenshots from different angles
+async function captureMultiAngleScreenshots() {
+  if (!sceneObject) return null;
+
+  // Save current camera position
+  const originalPosition = camera.position.clone();
+  const originalTarget = controls.target.clone();
+
+  const screenshots = [];
+
+  // Define viewpoints: [azimuth, elevation, label]
+  // Orthographic views + 1 isometric for context
+  const viewpoints = [
+    [0, 0, 'Front'],        // Straight front view
+    [90, 0, 'Left'],        // Left side view
+    [0, 90, 'Top'],         // Top-down view
+    [45, 30, 'Isometric'],  // Angled view for context
+  ];
+
+  for (const [azimuth, elevation, label] of viewpoints) {
+    frameCameraToObject(azimuth, elevation);
+    const screenshot = await captureSingleScreenshot();
+    screenshots.push({ screenshot, label });
+
+    // Small delay between captures
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+
+  // Restore original camera position
+  camera.position.copy(originalPosition);
+  controls.target.copy(originalTarget);
   controls.update();
   renderer.render(scene, camera);
 
-  // Small delay to ensure render completes
-  await new Promise(resolve => requestAnimationFrame(resolve));
-
-  return renderer.domElement.toDataURL('image/png', 1.0);
+  return screenshots;
 }
 
 // ─── AI prompt ─────────────────────────────────────────────────
@@ -333,11 +406,21 @@ const aiIterateSpinner = document.getElementById('ai-iterate-spinner');
 const iterationStatus = document.getElementById('iteration-status');
 const iterationScreenshot = document.getElementById('iteration-screenshot');
 
+// Reference image elements
+const referenceImageBtn = document.getElementById('reference-image-btn');
+const referenceImageInput = document.getElementById('reference-image-input');
+const referenceImagePreview = document.getElementById('reference-image-preview');
+const referenceImageImg = document.getElementById('reference-image-img');
+const referenceImageRemove = document.getElementById('reference-image-remove');
+
 // Iteration state
 let isIterating = false;
 let iterationCount = 0;
 const maxIterations = 5;
 let stopRequested = false;
+
+// Reference image state
+let referenceImageData = null;
 
 // Thinking panel
 const thinkingPanel = document.getElementById('thinking-panel');
@@ -382,12 +465,26 @@ function setAiStatus(msg, type = '') {
 }
 
 // Stream SSE from /api/iterate with vision, returns parsed result object
-async function callIterateApiStream(prompt, currentState, screenshot) {
-  const res = await fetch('/api/iterate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, currentState, screenshot }),
+async function callIterateApiStream(prompt, currentState, screenshots, referenceImage = null) {
+  console.log('[Frontend] Calling /api/iterate', {
+    hasPrompt: !!prompt,
+    hasScreenshots: !!screenshots,
+    screenshotCount: screenshots ? screenshots.length : 0,
+    hasReferenceImage: !!referenceImage,
   });
+
+  let res;
+  try {
+    res = await fetch('/api/iterate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt, currentState, screenshots, referenceImage }),
+    });
+    console.log('[Frontend] /api/iterate response:', res.status, res.statusText);
+  } catch (fetchErr) {
+    console.error('[Frontend] Fetch error:', fetchErr);
+    throw new Error(`Network error: ${fetchErr.message}`);
+  }
 
   // If server returned JSON (error before streaming started)
   const contentType = res.headers.get('content-type') || '';
@@ -450,12 +547,20 @@ async function callIterateApiStream(prompt, currentState, screenshot) {
 }
 
 // Stream SSE from /api/generate, returns parsed result object
-async function callApiStream(prompt, currentState) {
+async function callApiStream(prompt, currentState, referenceImage = null) {
+  console.log('[Frontend] Calling /api/generate', {
+    hasPrompt: !!prompt,
+    hasReferenceImage: !!referenceImage,
+    referenceImageSize: referenceImage ? referenceImage.length : 0
+  });
+
   const res = await fetch('/api/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ prompt, currentState }),
+    body: JSON.stringify({ prompt, currentState, referenceImage }),
   });
+
+  console.log('[Frontend] Response status:', res.status, res.statusText);
 
   // If server returned JSON (error before streaming started)
   const contentType = res.headers.get('content-type') || '';
@@ -519,11 +624,20 @@ async function callApiStream(prompt, currentState) {
 
 async function handleAiGenerate() {
   const prompt = aiPrompt.value.trim();
-  if (!prompt) return;
+  if (!prompt && !referenceImageData) {
+    setAiStatus('Please enter a prompt or upload a reference image', 'error');
+    return;
+  }
 
   setAiLoading(true);
   setAiStatus('');
   showThinkingPanel();
+
+  // Show reference image in the screenshot area if present
+  if (referenceImageData) {
+    displayReferenceImage(referenceImageData);
+    appendThinking('📸 Analyzing reference image...\n\n');
+  }
 
   const MAX_RETRIES = 2;
 
@@ -532,7 +646,7 @@ async function handleAiGenerate() {
       ? { mode: 'code', code: currentCode, buildSize }
       : { mode: 'empty', buildSize };
 
-    let data = await callApiStream(prompt, currentState);
+    let data = await callApiStream(prompt, currentState, referenceImageData);
     let lastError = null;
 
     // Try executing, auto-retry on runtime errors
@@ -553,7 +667,7 @@ async function handleAiGenerate() {
           setThinkingStatus('Retrying…');
           thinkingDot.classList.remove('done');
           const fixPrompt = `The code you generated threw this error:\n${err.message}\n\nPlease fix the code. Here is the broken code:\n${data.code}`;
-          data = await callApiStream(fixPrompt, { mode: 'empty', buildSize });
+          data = await callApiStream(fixPrompt, { mode: 'empty', buildSize }, referenceImageData);
         }
       }
     }
@@ -569,6 +683,11 @@ async function handleAiGenerate() {
     }
     setAiStatus(`→ ${name} (${meshCount} meshes)`, 'success');
     setThinkingStatus('Done', true);
+
+    // Hide reference image preview but keep data for iterations
+    if (referenceImageData) {
+      referenceImagePreview.classList.add('hidden');
+    }
   } catch (err) {
     console.error('AI error:', err);
     setAiStatus(err.message, 'error');
@@ -585,6 +704,110 @@ aiPrompt.addEventListener('keydown', (e) => {
     handleAiGenerate();
   }
 });
+
+// Auto-resize textarea
+aiPrompt.addEventListener('input', () => {
+  aiPrompt.style.height = 'auto';
+  aiPrompt.style.height = Math.min(aiPrompt.scrollHeight, 120) + 'px';
+});
+
+// ─── Reference image upload ────────────────────────────────────
+referenceImageBtn.addEventListener('click', () => {
+  referenceImageInput.click();
+});
+
+referenceImageInput.addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+
+  // Validate file type
+  if (!file.type.startsWith('image/')) {
+    setAiStatus('Please upload an image file', 'error');
+    return;
+  }
+
+  // Validate file size (max 10MB)
+  if (file.size > 10 * 1024 * 1024) {
+    setAiStatus('Image too large. Please upload an image smaller than 10MB', 'error');
+    return;
+  }
+
+  try {
+    // Convert to base64 with compression
+    const reader = new FileReader();
+    reader.onload = async (event) => {
+      try {
+        // Compress the image before storing
+        const compressed = await compressImage(event.target.result, 1024, 0.8);
+        referenceImageData = compressed;
+        referenceImageImg.src = compressed;
+        referenceImagePreview.classList.remove('hidden');
+        setAiStatus('Reference image uploaded. Click Generate to create a 3D version.', 'success');
+      } catch (compressionErr) {
+        console.error('Image compression error:', compressionErr);
+        setAiStatus('Failed to process image', 'error');
+      }
+    };
+    reader.onerror = () => {
+      setAiStatus('Failed to read image file', 'error');
+    };
+    reader.readAsDataURL(file);
+  } catch (err) {
+    console.error('Image upload error:', err);
+    setAiStatus('Failed to upload image', 'error');
+  }
+
+  // Clear the input so the same file can be selected again
+  e.target.value = '';
+});
+
+referenceImageRemove.addEventListener('click', () => {
+  clearReferenceImage();
+});
+
+function clearReferenceImage() {
+  referenceImageData = null;
+  referenceImageImg.src = '';
+  referenceImagePreview.classList.add('hidden');
+  referenceImageInput.value = '';
+  setAiStatus('');
+}
+
+// Compress image to reduce API payload size
+async function compressImage(dataUrl, maxSize = 1024, quality = 0.8) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      // Calculate new dimensions while maintaining aspect ratio
+      let width = img.width;
+      let height = img.height;
+
+      if (width > maxSize || height > maxSize) {
+        if (width > height) {
+          height = (height / width) * maxSize;
+          width = maxSize;
+        } else {
+          width = (width / height) * maxSize;
+          height = maxSize;
+        }
+      }
+
+      // Create canvas and draw resized image
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+
+      // Convert to JPEG with specified quality
+      const compressed = canvas.toDataURL('image/jpeg', quality);
+      console.log(`[Image] Compressed from ${(dataUrl.length / 1024).toFixed(1)}KB to ${(compressed.length / 1024).toFixed(1)}KB`);
+      resolve(compressed);
+    };
+    img.onerror = reject;
+    img.src = dataUrl;
+  });
+}
 
 // ─── Iteration helper functions ────────────────────────────────
 function setIterateButtonState(active) {
@@ -617,6 +840,104 @@ function displayScreenshot(dataURL) {
   iterationScreenshot.appendChild(img);
 }
 
+function displayMultipleScreenshots(screenshots, referenceImage = null) {
+  iterationScreenshot.innerHTML = '';
+
+  // Create a grid container
+  const grid = document.createElement('div');
+  grid.style.display = 'grid';
+  grid.style.gridTemplateColumns = 'repeat(2, 1fr)';
+  grid.style.gap = '8px';
+
+  // Add reference image first if available
+  if (referenceImage) {
+    const container = document.createElement('div');
+    container.style.position = 'relative';
+
+    const img = document.createElement('img');
+    img.src = referenceImage;
+    img.style.width = '100%';
+    img.style.borderRadius = '4px';
+    img.style.border = '2px solid #ff9800'; // Orange border to highlight reference
+
+    const labelDiv = document.createElement('div');
+    labelDiv.textContent = 'REFERENCE';
+    labelDiv.style.position = 'absolute';
+    labelDiv.style.bottom = '4px';
+    labelDiv.style.left = '4px';
+    labelDiv.style.fontSize = '9px';
+    labelDiv.style.padding = '2px 6px';
+    labelDiv.style.background = '#ff9800';
+    labelDiv.style.color = '#000';
+    labelDiv.style.borderRadius = '3px';
+    labelDiv.style.fontWeight = '700';
+    labelDiv.style.textTransform = 'uppercase';
+    labelDiv.style.letterSpacing = '0.5px';
+
+    container.appendChild(img);
+    container.appendChild(labelDiv);
+    grid.appendChild(container);
+  }
+
+  // Add current 3D model screenshots
+  screenshots.forEach(({ screenshot, label }) => {
+    const container = document.createElement('div');
+    container.style.position = 'relative';
+
+    const img = document.createElement('img');
+    img.src = screenshot;
+    img.style.width = '100%';
+    img.style.borderRadius = '4px';
+    img.style.border = '1px solid rgba(255, 255, 255, 0.1)';
+
+    const labelDiv = document.createElement('div');
+    labelDiv.textContent = label;
+    labelDiv.style.position = 'absolute';
+    labelDiv.style.bottom = '4px';
+    labelDiv.style.left = '4px';
+    labelDiv.style.fontSize = '9px';
+    labelDiv.style.padding = '2px 6px';
+    labelDiv.style.background = 'rgba(0, 0, 0, 0.7)';
+    labelDiv.style.color = '#aaa';
+    labelDiv.style.borderRadius = '3px';
+    labelDiv.style.fontWeight = '600';
+    labelDiv.style.textTransform = 'uppercase';
+    labelDiv.style.letterSpacing = '0.5px';
+
+    container.appendChild(img);
+    container.appendChild(labelDiv);
+    grid.appendChild(container);
+  });
+
+  iterationScreenshot.appendChild(grid);
+}
+
+function displayReferenceImage(imageData) {
+  iterationScreenshot.innerHTML = '';
+
+  const container = document.createElement('div');
+  container.style.position = 'relative';
+
+  const label = document.createElement('div');
+  label.textContent = 'Reference Image';
+  label.style.fontSize = '10px';
+  label.style.color = '#999';
+  label.style.marginBottom = '6px';
+  label.style.fontWeight = '600';
+  label.style.textTransform = 'uppercase';
+  label.style.letterSpacing = '0.5px';
+
+  const img = document.createElement('img');
+  img.src = imageData;
+  img.style.width = '100%';
+  img.style.borderRadius = '6px';
+  img.style.border = '1px solid rgba(255, 255, 255, 0.1)';
+
+  container.appendChild(label);
+  container.appendChild(img);
+  iterationScreenshot.appendChild(container);
+}
+
 function requestStopIteration() {
   stopRequested = true;
   updateIterationStatus(iterationCount, maxIterations, 'Stopping after this iteration…');
@@ -640,28 +961,57 @@ async function handleIterativeImprovement() {
   thinkingPanel.classList.remove('hidden');
 
   const MAX_RETRIES = 2;
-  const iterationPrompt = aiPrompt.value.trim() || 'Improve this 3D object to make it more detailed and visually appealing';
+
+  // If there's a reference image, use it to guide iterations
+  let iterationPrompt;
+  if (referenceImageData) {
+    iterationPrompt = aiPrompt.value.trim() || 'Make this 3D model match the reference image more closely. Improve accuracy, proportions, and details.';
+  } else {
+    iterationPrompt = aiPrompt.value.trim() || 'Improve this 3D object to make it more detailed and visually appealing';
+  }
 
   try {
     while (iterationCount < maxIterations && !stopRequested) {
       iterationCount++;
       updateIterationStatus(iterationCount, maxIterations);
 
-      // Capture screenshot
-      setThinkingStatus(`Capturing screenshot (${iterationCount}/${maxIterations})…`);
-      let screenshot;
+      // Capture multiple screenshots from different angles
+      setThinkingStatus(`Capturing screenshots (${iterationCount}/${maxIterations})…`);
+      let screenshots;
       try {
-        screenshot = await captureScreenshot();
-        displayScreenshot(screenshot);
+        screenshots = await captureMultiAngleScreenshots();
+        if (!screenshots || screenshots.length === 0) {
+          throw new Error('No screenshots captured');
+        }
+        // Display screenshots with reference image if available
+        displayMultipleScreenshots(screenshots, referenceImageData);
       } catch (err) {
         throw new Error(`Screenshot capture failed: ${err.message}`);
       }
 
-      // Call vision API
-      thinkingContent.textContent += `\n\n─── Iteration ${iterationCount}/${maxIterations} ───\n\n`;
+      // Call vision API with all screenshots (and reference image if available)
+      thinkingContent.textContent += `\n\n─── Iteration ${iterationCount}/${maxIterations} ───\n`;
+      thinkingContent.textContent += `📸 Captured ${screenshots.length} angles: ${screenshots.map(s => s.label).join(', ')}\n`;
+      if (referenceImageData) {
+        thinkingContent.textContent += `🎯 Using reference image to guide improvements\n`;
+      }
+      thinkingContent.textContent += `\n`;
       thinkingContent.scrollTop = thinkingContent.scrollHeight;
+
+      // Update status to show we're calling the API
+      setThinkingStatus(`Analyzing (${iterationCount}/${maxIterations})...`);
+      thinkingDot.classList.remove('done');
+
       const currentState = { mode: 'code', code: currentCode, buildSize };
-      let data = await callIterateApiStream(iterationPrompt, currentState, screenshot);
+
+      // Include reference image in iteration if it exists
+      let data;
+      try {
+        data = await callIterateApiStream(iterationPrompt, currentState, screenshots, referenceImageData);
+      } catch (apiErr) {
+        appendThinking(`\n\n❌ API Error: ${apiErr.message}\n\n`);
+        throw apiErr;
+      }
 
       // Show observations if provided
       if (data.observations) {
@@ -691,7 +1041,7 @@ async function handleIterativeImprovement() {
             thinkingDot.classList.remove('done');
             const fixPrompt = `The code you generated threw this error:\n${err.message}\n\nPlease fix the code. Here is the broken code:\n${data.code}`;
             // Pass previous working code as context for retry
-            data = await callIterateApiStream(fixPrompt, { mode: 'code', code: previousCode, buildSize }, screenshot);
+            data = await callIterateApiStream(fixPrompt, { mode: 'code', code: previousCode, buildSize }, screenshots, referenceImageData);
           } else {
             // Final retry failed - restore previous working code
             appendThinking(`\n\n⚠ All retry attempts failed. Keeping iteration ${iterationCount - 1} result.\n\n`);
