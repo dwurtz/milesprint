@@ -6,6 +6,9 @@ __pycache__/
 *.so
 .Python
 
+# TripoSR clone
+TripoSR/
+
 # TripoSR model cache
 .cache/
 checkpoints/

@@ -5,10 +5,19 @@ Provides a Flask API for converting images to 3D meshes using TripoSR.
 """
 
 import os
+import sys
 import tempfile
 import base64
 from io import BytesIO
 from pathlib import Path
+
+# Add TripoSR to Python path
+triposr_path = Path(__file__).parent / "TripoSR"
+if triposr_path.exists():
+    sys.path.insert(0, str(triposr_path))
+else:
+    print("⚠️  TripoSR directory not found. Run setup.sh first.")
+    sys.exit(1)
 
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS

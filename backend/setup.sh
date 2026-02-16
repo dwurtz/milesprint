@@ -41,6 +41,19 @@ pip install --upgrade pip
 pip install -r requirements.txt
 
 echo ""
+echo "Cloning TripoSR repository..."
+if [ ! -d "TripoSR" ]; then
+    git clone https://github.com/VAST-AI-Research/TripoSR.git
+    echo "✅ TripoSR cloned"
+else
+    echo "✅ TripoSR already exists"
+fi
+
+echo ""
+echo "Installing torchmcubes (required for TripoSR)..."
+pip install torchmcubes
+
+echo ""
 echo "=========================================="
 echo "  Setup Complete!"
 echo "=========================================="
