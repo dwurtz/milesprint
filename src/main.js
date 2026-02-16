@@ -548,7 +548,7 @@ async function callIterateApiStream(prompt, currentState, screenshots, reference
 }
 
 // ───  TripoSR Integration ──────────────────────────────────────
-const TRIPOSR_BACKEND = 'http://localhost:5000';
+const TRIPOSR_BACKEND = 'http://localhost:5001';
 const gltfLoader = new GLTFLoader();
 
 async function generateWithTripoSR(referenceImage, resolution = 256) {

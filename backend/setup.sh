@@ -50,8 +50,12 @@ else
 fi
 
 echo ""
-echo "Installing torchmcubes (required for TripoSR)..."
-pip install torchmcubes
+echo "Installing mesh processing dependencies..."
+# Try torchmcubes first, fallback to PyMCubes
+pip install torchmcubes 2>/dev/null || {
+    echo "⚠️  torchmcubes not available, using PyMCubes as fallback"
+    pip install PyMCubes
+}
 
 echo ""
 echo "=========================================="
