@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>3D Object Studio</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="viewport"></canvas>
+
+      <!-- Settings gear (top-right) -->
+      <button id="settings-toggle" class="settings-toggle" title="Settings">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+
+      <!-- Settings panel (hidden by default) -->
+      <div id="settings-panel" class="settings-panel hidden">
+        <div class="settings-header">
+          <span>Settings</span>
+          <button id="settings-close" class="settings-close">&times;</button>
+        </div>
+
+        <div class="settings-group">
+          <label for="color-picker">Color</label>
+          <input type="color" id="color-picker" value="#4fc3f7" />
+        </div>
+
+        <div class="settings-group">
+          <label for="material-select">Material</label>
+          <select id="material-select">
+            <option value="standard">Standard</option>
+            <option value="phong">Phong</option>
+            <option value="lambert">Lambert</option>
+            <option value="wireframe">Wireframe</option>
+            <option value="normal">Normal Map</option>
+          </select>
+        </div>
+
+        <div class="settings-group">
+          <label>Max Build Size (mm)</label>
+          <div class="size-inputs">
+            <div class="size-field">
+              <span class="size-label">X</span>
+              <input type="number" id="max-size-x" value="256" min="10" max="1000" step="1" />
+            </div>
+            <div class="size-field">
+              <span class="size-label">Y</span>
+              <input type="number" id="max-size-y" value="256" min="10" max="1000" step="1" />
+            </div>
+            <div class="size-field">
+              <span class="size-label">Z</span>
+              <input type="number" id="max-size-z" value="256" min="10" max="1000" step="1" />
+            </div>
+          </div>
+        </div>
+
+        <div class="settings-group toggles">
+          <label><input type="checkbox" id="toggle-grid" checked /> Grid</label>
+          <label><input type="checkbox" id="toggle-axes" checked /> Axes</label>
+          <label><input type="checkbox" id="toggle-wireframe" /> Wireframe Overlay</label>
+        </div>
+
+        <div class="settings-group settings-actions">
+          <button id="export-stl" class="btn-settings">Export STL</button>
+          <button id="reset-camera" class="btn-settings btn-outline">Reset Camera</button>
+        </div>
+      </div>
+
+      <!-- Thinking panel (left side) -->
+      <div id="thinking-panel" class="thinking-panel hidden">
+        <div class="thinking-header">
+          <div class="thinking-title-row">
+            <span class="thinking-dot"></span>
+            <span id="thinking-title">Thinking…</span>
+          </div>
+          <button id="thinking-close" class="thinking-close">&times;</button>
+        </div>
+        <div id="iteration-screenshot" class="iteration-screenshot"></div>
+        <div id="thinking-content" class="thinking-content"></div>
+      </div>
+
+      <!-- Prompt bar (bottom-center) -->
+      <div id="prompt-bar">
+        <div id="ai-status" class="ai-status"></div>
+        <div id="iteration-status" class="iteration-status"></div>
+        <div class="prompt-input-row">
+          <textarea id="ai-prompt" rows="1" placeholder="Describe a 3D object... &quot;a dragon&quot;, &quot;make it bigger&quot;, &quot;red sports car&quot;"></textarea>
+          <button id="ai-generate" class="btn-generate">
+            <span id="ai-btn-text">Generate</span>
+            <span id="ai-spinner" class="spinner hidden"></span>
+          </button>
+          <button id="ai-iterate" class="btn-iterate" disabled>
+            <span id="ai-iterate-text">Iterate & Improve</span>
+            <span id="ai-iterate-spinner" class="spinner hidden"></span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
